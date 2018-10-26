@@ -213,7 +213,7 @@ for iter = 1:Op.maxIter
         Quu_set = [];
         Qux_set = [];
         Qu_set = [];
-        [diverge, Vx, Vxx, l, L, dV, Quu_set, Qux_set, Qu_set, const_dset, const_Cset] = back_pass(cx,cu,cxx,cxu,cuu,fx,fu,fxx,fxu,fuu, lambda,Op.regType,Op.lims, x, u, CONST, DYNCST);
+        [diverge, Vx, Vxx, l, L, dV, Quu_set, Qux_set, Qu_set] = back_pass(cx,cu,cxx,cxu,cuu,fx,fu,fxx,fxu,fuu, lambda,Op.regType,Op.lims, x, u, CONST, DYNCST);
         trace(iter).time_backward = toc(t_back);
         
         if diverge
@@ -247,7 +247,7 @@ for iter = 1:Op.maxIter
     if backPassDone
         t_fwd = tic;
         if Op.parallel  % parallel line-search
-            [xnew,unew,costnew] = forward_pass_QP(x0 ,u, L, x(:,1:N), l, Quu_set, Qux_set, Qu_set, const_dset, const_Cset, Op.Alpha, DYNCST, CONST, Op.lims,Op.diffFn);
+            [xnew,unew,costnew] = forward_pass_QP(x0 ,u, L, x(:,1:N), l, Quu_set, Qux_set, Qu_set, Op.Alpha, DYNCST, CONST, Op.lims,Op.diffFn);
             Dcost               = sum(cost(:)) - sum(costnew,2);
             [dcost, w]          = max(Dcost);
             alpha               = Op.Alpha(w);
@@ -447,7 +447,7 @@ xnew = permute(xnew, [1 3 2]);
 unew = permute(unew, [1 3 2]);
 cnew = permute(cnew, [1 3 2]);
 
-function [xnew,unew,cnew] = forward_pass_QP(x0,u,L,x,du, Quu, Qux, Qu, const_dset, const_Cset, Alpha,DYNCST,CONST, lims,diff)
+function [xnew,unew,cnew] = forward_pass_QP(x0,u,L,x,du, Quu, Qux, Qu, Alpha,DYNCST,CONST, lims,diff)
 % parallel forward-pass (rollout)
 % internally time is on the 3rd dimension, 
 % to facillitate vectorized dynamics calls
@@ -462,6 +462,7 @@ xnew        = zeros(n,K,N);
 xnew(:,:,1) = x0(:,ones(1,K));
 unew        = zeros(m,K,N);
 cnew        = zeros(1,K,N+1);
+d  = -100 * ones(K, 1);
 for i = 1:N
     unew(:,:,i) = u(:,i*K1);
     
@@ -475,40 +476,35 @@ for i = 1:N
         else
             dx          = xnew(:,:,i) - x(:,i*K1);
         end
-        %unew(:,:,i) = unew(:,:,i) + L(:,:,i)*dx;
+%         unew(:,:,i) = unew(:,:,i) + L(:,:,i)*dx;
     end
-%     [xnew(:,:,i+1), cnew(:,:,i)]  = DYNCST(xnew(:,:,i), unew(:,:,i), i*K1);
-         
-    d = const_dset(i);
-    C = const_Cset(:,i);
-    %[x_sol, a, b, c, lag] = quadprog(Quu(:,:,i), Qu(:,i) + Qux(:, :, i)*dx(:,1), C', -d);
-    
-    for j = 1: 11
-        if isnan(Alpha(j)*Qu(:,i) + Qux(:, :, i)*dx(:, j)) 
-               unew(:,j,i) = unew(:,j,i) - Alpha(j)*pinv(Quu(:,:,i))*(Qu(:,i)) - pinv(Quu(:,:,i))*Qux(:,:,i)*dx(:,j);
-        else
-            h = 2^-16;
-            [tmp,  ~] = DYNCST(xnew(:,j,i), unew(:,j,i), i);
-            A = zeros(2);
-            d = CONST(tmp);
-            if (i > 1)
-                [tmp,  ~] = DYNCST(xnew(:,j,i), unew(:,j,i) +[h;0], i);
-                A(1) = (CONST(tmp) - d)/ h;
-                [tmp,  ~] = DYNCST(xnew(:,j,i), unew(:,j,i) +[0;h], i);
-                A(2) = (CONST(tmp) - d)/ h;
+
+    for j = 1 : 11
+        if i > 1
+            if d(j) > 0
+                h = 2^-16;
+                [tmp,  ~] = DYNCST(xnew(:,j,i-1), unew(:,j,i-1) +[h;0], i-1);
+                A(1) = (CONST(tmp) - d(j))/ h;
+                [tmp,  ~] = DYNCST(xnew(:,j,i-1), unew(:,j,i-1) +[0;h], i-1);
+                A(2) = (CONST(tmp) - d(j))/ h;
                 C = [A(1);A(2)];
-                if isnan(C)
-                    C = [0; 0];
-                    d = [0];
+                if isnan(Alpha(j)*Qu(:,i) + Qux(:, :, i)*dx(:, j)) | isnan(C) 
+                    unew(:,j,i) = unew(:,j,i) + Alpha(j)*du(:,i) + L(:,:,i)*dx(:,j);
+                else
+                    [x_sol] = qpOASES(Quu(:,:,i),  Alpha(j)*Qu(:,i) + Qux(:, :, i)*dx(:, j), C', [], [], [], -d(j) - 0.1);
+                    unew(:,j,i) = unew(:,j,i) + x_sol;
                 end
             else
-                C = [0; 0];
+                unew(:,j,i) = unew(:,j,i) + Alpha(j)*du(:,i) + L(:,:,i)*dx(:,j);
             end
-            [x_sol] = qpOASES(Quu(:,:,i),  Alpha(j)*Qu(:,i) + Qux(:, :, i)*dx(:, j), C', [], [], [], -d);
-            unew(:,j,i) = unew(:,j,i) + x_sol;
+        else
+            unew(:,j,i) = unew(:,j,i) + Alpha(j)*du(:,i) + L(:,:,i)*dx(:,j);
         end
     end
     [xnew(:,:,i+1), cnew(:,:,i)]  = DYNCST(xnew(:,:,i), unew(:,:,i), i*K1);
+    for j = 1:K
+        d(j) = CONST(xnew(:,j,i+1));
+    end
 end
 [~, cnew(:,:,N+1)] = DYNCST(xnew(:,:,N+1),nan(m,K,1),i);
 % put the time dimension in the columns
@@ -516,7 +512,7 @@ xnew = permute(xnew, [1 3 2]);
 unew = permute(unew, [1 3 2]);
 cnew = permute(cnew, [1 3 2]);
 
-function [diverge, Vx, Vxx, k, K, dV, Quu_set, Qux_set, Qu_set, const_dset, const_Cset] = back_pass(cx,cu,cxx,cxu,cuu,fx,fu,fxx,fxu,fuu, lambda,regType,lims, x, u, CONST, DYNCST)
+function [diverge, Vx, Vxx, k, K, dV, Quu_set, Qux_set, Qu_set] = back_pass(cx,cu,cxx,cxu,cuu,fx,fu,fxx,fxu,fuu, lambda,regType,lims, x, u, CONST, DYNCST)
 % Perform the Ricatti-Mayne backward pass
 
 % tensor multiplication for DDP terms
@@ -583,26 +579,23 @@ for i = N-1:-1:1
     end
     
     % check Constraint
-    const_d = CONST(x(:, i));
-    const_dset(i) = const_d;
-    
-    h = 2^-16;
-    x_new = x(:,i);
-    A = zeros(6, 1);
-    if (i > 1)
-        A(1) = (CONST(x_new + [h;0;0;0]) - const_d)/ h;
-        A(2) = (CONST(x_new + [0;h;0;0]) - const_d)/ h;
-        [x_new,  ~] = DYNCST(x(:,i-1), u(:,i-1) +[h;0], i-1);
-        A(5) = (CONST(x_new) - const_d)/ h;
-        [x_new,  ~] = DYNCST(x(:,i-1), u(:,i-1) +[0;h], i-1);
-        A(6) = (CONST(x_new) - const_d)/ h;
-        C = [A(5);A(6)];
-        D = -[A(1); A(2); A(3); A(4)];
-        const_Cset(:,i) = C;
-    end
+    const_d = CONST(x(:, i)); 
        
-    if const_d > -1.0
-       % [x_sol, a, b, c, lag] = quadprog(QuuF, Qu, [], [], C', [0]);
+    if const_d > 0.5
+        h = 2^-16;
+        x_new = x(:,i);
+        A = zeros(6, 1);
+        if (i > 1)
+            A(1) = (CONST(x_new + [h;0;0;0]) - const_d)/ h;
+            A(2) = (CONST(x_new + [0;h;0;0]) - const_d)/ h;
+            [x_new,  ~] = DYNCST(x(:,i-1), u(:,i-1) +[h;0], i-1);
+            A(5) = (CONST(x_new) - const_d)/ h;
+            [x_new,  ~] = DYNCST(x(:,i-1), u(:,i-1) +[0;h], i-1);
+            A(6) = (CONST(x_new) - const_d)/ h;
+            C = [A(5);A(6)];
+            D = -[A(1); A(2); A(3); A(4)];
+        end
+        % [x_sol, a, b, c, lag] = quadprog(QuuF, Qu, [], [], C', [0]);
        [x_sol, a, b, c, lag] = qpOASES(QuuF,  Qu, C', [], [], [0], [0]);
        if (sum(lag) > 0)
            QuuF_inv = pinv(QuuF);
