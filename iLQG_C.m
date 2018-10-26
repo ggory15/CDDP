@@ -1,4 +1,4 @@
-function [x, u, L, Vx, Vxx, cost, trace, stop] = iLQG(DYNCST, CONST, x0, u0, Op)
+function [x, u, L, Vx, Vxx, cost, trace, stop] = iLQG_C(DYNCST, CONST, x0, u0, Op)
 % iLQG - solve the deterministic finite-horizon optimal control problem.
 %
 %        minimize sum_i CST(x(:,i),u(:,i)) + CST(x(:,end))
@@ -482,12 +482,32 @@ for i = 1:N
     d = const_dset(i);
     C = const_Cset(:,i);
     %[x_sol, a, b, c, lag] = quadprog(Quu(:,:,i), Qu(:,i) + Qux(:, :, i)*dx(:,1), C', -d);
-    if isnan(Qu(:,i) + Qux(:, :, i)*dx(:,1))
-        print("a")
-        print("b")
+    
+    for j = 1: 11
+        if isnan(Alpha(j)*Qu(:,i) + Qux(:, :, i)*dx(:, j)) 
+               unew(:,j,i) = unew(:,j,i) - Alpha(j)*pinv(Quu(:,:,i))*(Qu(:,i)) - pinv(Quu(:,:,i))*Qux(:,:,i)*dx(:,j);
+        else
+            h = 2^-16;
+            [tmp,  ~] = DYNCST(xnew(:,j,i), unew(:,j,i), i);
+            A = zeros(2);
+            d = CONST(tmp);
+            if (i > 1)
+                [tmp,  ~] = DYNCST(xnew(:,j,i), unew(:,j,i) +[h;0], i);
+                A(1) = (CONST(tmp) - d)/ h;
+                [tmp,  ~] = DYNCST(xnew(:,j,i), unew(:,j,i) +[0;h], i);
+                A(2) = (CONST(tmp) - d)/ h;
+                C = [A(1);A(2)];
+                if isnan(C)
+                    C = [0; 0];
+                    d = [0];
+                end
+            else
+                C = [0; 0];
+            end
+            [x_sol] = qpOASES(Quu(:,:,i),  Alpha(j)*Qu(:,i) + Qux(:, :, i)*dx(:, j), C', [], [], [], -d);
+            unew(:,j,i) = unew(:,j,i) + x_sol;
+        end
     end
-    [x_sol] = qpOASES(Quu(:,:,i),  Qu(:,i) + Qux(:, :, i)*dx(:,1), C', [], [], [], -d);
-    unew(:,:,i) = unew(:,:,i) + x_sol*Alpha;
     [xnew(:,:,i+1), cnew(:,:,i)]  = DYNCST(xnew(:,:,i), unew(:,:,i), i*K1);
 end
 [~, cnew(:,:,N+1)] = DYNCST(xnew(:,:,N+1),nan(m,K,1),i);
@@ -581,10 +601,9 @@ for i = N-1:-1:1
         const_Cset(:,i) = C;
     end
        
-    if const_d > -1.9
+    if const_d > -1.0
        % [x_sol, a, b, c, lag] = quadprog(QuuF, Qu, [], [], C', [0]);
        [x_sol, a, b, c, lag] = qpOASES(QuuF,  Qu, C', [], [], [0], [0]);
-    
        if (sum(lag) > 0)
            QuuF_inv = pinv(QuuF);
            W = pinv(C'*QuuF_inv*C)*C'*QuuF_inv;
@@ -613,7 +632,7 @@ for i = N-1:-1:1
     
     Quu_set(:,:,i) = QuuF;
     Qu_set(:, i) = Qu;
-    Qux_set(:,:,i) = Qux;
+    Qux_set(:,:,i) = Qux_reg;
     % save controls/gains
     k(:,i)      = k_i;
     K(:,:,i)    = K_i;
