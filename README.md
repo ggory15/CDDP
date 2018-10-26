@@ -1,10 +1,12 @@
 # This is DDP with Nonlinear Constraints[1]
 This code is based on https://kr.mathworks.com/matlabcentral/fileexchange/52069-ilqg-ddp-trajectory-optimization [2].
 
+# Dependency
+(1) qpOASES in Matlab
 # How to Use it
 (1) open the demo_car.m
 
-(2) run this script
+(2) run this script 
 
 # Result
   - https://youtu.be/rygcNHlTTJ4  
